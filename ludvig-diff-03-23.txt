@@ -1,0 +1,952 @@
+diff -r 0905868db490 src/hotspot/cpu/x86/templateTable_x86.cpp
+--- a/src/hotspot/cpu/x86/templateTable_x86.cpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/cpu/x86/templateTable_x86.cpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -2924,6 +2924,13 @@
+   // atos
+   do_oop_load(_masm, field, rax);
+   __ push(atos);
++
++  //David Simms advised to put this in, apparently a shortcoming of the original code that it doesnt check this
++  //Don't think it has an effect, might be completely unnecessary
++  if (VerifyOops) {
++    __ verify_oop(rax);
++  }
++
+   if (!is_static && rc == may_rewrite) {
+     patch_bytecode(Bytecodes::_fast_agetfield, bc, rbx);
+   }
+diff -r 0905868db490 src/hotspot/share/classfile/javaClasses.hpp
+--- a/src/hotspot/share/classfile/javaClasses.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/classfile/javaClasses.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -102,6 +102,7 @@
+ // Interface to java.lang.String objects
+ 
+ class java_lang_String : AllStatic {
++
+  private:
+   static int value_offset;
+   static int hash_offset;
+@@ -246,6 +247,12 @@
+   friend class VMStructs;
+   friend class JVMCIVMStructs;
+ 
++  friend void quick_init(InstanceKlass*, TRAPS);
++  friend class SetLockClosure;
++  friend class NullifyLockClosure;
++  friend void java_lang_Class_set_protection_domain(oop, oop);
++  friend void java_lang_Class_set_mirror_module_field(Klass* k, Handle mirror, Handle module, TRAPS);
++
+  private:
+   // The fake offsets are added by the class loader when java.lang.Class is loaded
+ 
+diff -r 0905868db490 src/hotspot/share/classfile/systemDictionary.cpp
+--- a/src/hotspot/share/classfile/systemDictionary.cpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/classfile/systemDictionary.cpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -1875,6 +1875,7 @@
+ 
+ void SystemDictionary::initialize(TRAPS) {
+   // Allocate arrays
++  log_info(cds)("Hello");
+   _placeholders        = new PlaceholderTable(_placeholder_table_size);
+   _loader_constraints  = new LoaderConstraintTable(_loader_constraint_size);
+   _resolution_errors   = new ResolutionErrorTable(_resolution_error_size);
+@@ -1885,6 +1886,10 @@
+   _system_loader_lock_obj = oopFactory::new_intArray(0, CHECK);
+   // Initialize basic classes
+   resolve_well_known_classes(CHECK);
++
++  // Janiuk
++  //print();
++
+ }
+ 
+ // Compact table of directions on the initialization of klasses:
+diff -r 0905868db490 src/hotspot/share/classfile/systemDictionary.hpp
+--- a/src/hotspot/share/classfile/systemDictionary.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/classfile/systemDictionary.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -228,6 +228,8 @@
+   friend class VMStructs;
+   friend class SystemDictionaryHandles;
+ 
++  friend class Threads;
++
+  public:
+   enum WKID {
+     NO_WKID = 0,
+diff -r 0905868db490 src/hotspot/share/gc/epsilon/epsilonHeap.hpp
+--- a/src/hotspot/share/gc/epsilon/epsilonHeap.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/gc/epsilon/epsilonHeap.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -34,6 +34,7 @@
+ 
+ class EpsilonHeap : public CollectedHeap {
+   friend class VMStructs;
++  friend Threads;
+ private:
+   SoftRefPolicy _soft_ref_policy;
+   EpsilonMonitoringSupport* _monitoring_support;
+diff -r 0905868db490 src/hotspot/share/gc/shared/threadLocalAllocBuffer.hpp
+--- a/src/hotspot/share/gc/shared/threadLocalAllocBuffer.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/gc/shared/threadLocalAllocBuffer.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -45,6 +45,7 @@
+ class ThreadLocalAllocBuffer: public CHeapObj<mtThread> {
+   friend class VMStructs;
+   friend class JVMCIVMStructs;
++  friend class Threads;
+ private:
+   HeapWord* _start;                              // address of TLAB
+   HeapWord* _top;                                // address after last allocation
+diff -r 0905868db490 src/hotspot/share/oops/compressedOops.hpp
+--- a/src/hotspot/share/oops/compressedOops.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/oops/compressedOops.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -47,6 +47,7 @@
+ 
+ class CompressedOops : public AllStatic {
+   friend class VMStructs;
++  friend class Threads;
+ 
+   // For UseCompressedOops.
+   static NarrowPtrStruct _narrow_oop;
+diff -r 0905868db490 src/hotspot/share/oops/instanceKlass.cpp
+--- a/src/hotspot/share/oops/instanceKlass.cpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/oops/instanceKlass.cpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -676,6 +676,7 @@
+   oop lock = java_lang_Class::init_lock(java_mirror());
+   // Prevent reordering with any access of initialization state
+   OrderAccess::loadload();
++  // Janiuk likes poking here
+   assert((oop)lock != NULL || !is_not_initialized(), // initialized or in_error state
+          "only fully initialized state can have a null lock");
+   return lock;
+@@ -940,6 +941,9 @@
+     }
+   }
+ }
++// =========================
++// FROM HERE
++// =========================
+ 
+ void InstanceKlass::initialize_impl(TRAPS) {
+   HandleMark hm(THREAD);
+@@ -958,7 +962,7 @@
+   // refer to the JVM book page 47 for description of steps
+   // Step 1
+   {
+-    Handle h_init_lock(THREAD, init_lock());
++    Handle h_init_lock(THREAD, init_lock()); // Question: is the init_lock null here? A: It's not! not even for str
+     ObjectLocker ol(h_init_lock, THREAD, h_init_lock() != NULL);
+ 
+     // Step 2
+@@ -1090,10 +1094,14 @@
+   DTRACE_CLASSINIT_PROBE_WAIT(end, -1, wait);
+ }
+ 
++// =========================
++// TO HERE
++// =========================
+ 
+ void InstanceKlass::set_initialization_state_and_notify(ClassState state, TRAPS) {
+   Handle h_init_lock(THREAD, init_lock());
+-  if (h_init_lock() != NULL) {
++  //if (true) { // This is a bit more brutal, but continuing on the theme of removing lock-related assertions...
++  if (h_init_lock() != NULL) { // Didnt really help, let's back off
+     ObjectLocker ol(h_init_lock, THREAD);
+     set_init_thread(NULL); // reset _init_thread before changing _init_state
+     set_init_state(state);
+diff -r 0905868db490 src/hotspot/share/oops/instanceKlass.hpp
+--- a/src/hotspot/share/oops/instanceKlass.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/oops/instanceKlass.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -122,6 +122,11 @@
+   friend class ClassFileParser;
+   friend class CompileReplay;
+ 
++  // Janiuk
++  friend class SetInitializedStateClosure;
++  friend void quick_init(InstanceKlass* k, TRAPS);
++  friend class JaniukKlassClosure;
++
+  public:
+   static const KlassID ID = InstanceKlassID;
+ 
+diff -r 0905868db490 src/hotspot/share/oops/klass.cpp
+--- a/src/hotspot/share/oops/klass.cpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/oops/klass.cpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -22,6 +22,7 @@
+  *
+  */
+ 
++#include <runtime/janiuk.hpp>
+ #include "precompiled.hpp"
+ #include "classfile/classLoaderData.inline.hpp"
+ #include "classfile/classLoaderDataGraph.inline.hpp"
+@@ -546,6 +547,14 @@
+   _java_mirror = NULL;
+ }
+ 
++// Just to break privacy rules with a bit more precision
++void java_lang_Class_set_protection_domain(oop java_class, oop pd) {
++  java_lang_Class::set_protection_domain(java_class, pd);
++}
++void java_lang_Class_set_mirror_module_field(Klass* k, Handle mirror, Handle module, TRAPS) {
++  java_lang_Class::set_mirror_module_field(k, mirror, module, THREAD);
++}
++
+ void Klass::restore_unshareable_info(ClassLoaderData* loader_data, Handle protection_domain, TRAPS) {
+   assert(is_klass(), "ensure C++ vtable is restored");
+   assert(is_shared(), "must be set");
+@@ -583,7 +592,61 @@
+   // Obtain java.lang.Module, if available
+   Handle module_handle(THREAD, ((module_entry != NULL) ? module_entry->module() : (oop)NULL));
+ 
+-  if (this->has_raw_archived_mirror()) {
++  if(is_restoring_heap_archive) {
++/* This part of the code is copied from java_lang_Class::restore_archived_mirror.
++
++       We can eventually use this for all classes loaded from VM start-up, but there are some complications
++       (see the "if (!SystemDictionary::Class_klass_loaded()) {" part of restore_archived_mirror.).
++    */
++    int i = current_table_entry;
++    // If this is a recursion, current wont be correct so need to search explicitly
++    // Q: Could we instead block super-recursions etc when restoring heap? Difference is order.
++    if(((InstanceKlass*)this) != table[i].k) {
++      for(size_t j = 0; j < n_slots; ++j) {
++        if (table[j].k == NULL) { //Break on the sentinel
++          assert(false, "Didnt find the class in the dump!");
++        }
++        if (((InstanceKlass*)this) == table[j].k) {
++          i = j;
++          break;
++        }
++      }
++    }
++
++    oop m = table[i].mirror;
++    assert(((InstanceKlass*)this) == table[i].k, "We're relying on this");
++    Handle mirror(THREAD, m);
++
++    if (!is_array_klass()) {
++      /* not needed as quick_init() doesn't need the lock.
++
++      // - local static final fields with initial values were initialized at dump time
++
++      // create the init_lock
++      typeArrayOop r = oopFactory::new_typeArray(T_INT, 0, CHECK_(false));
++      set_init_lock(mirror(), r);
++      */
++
++      if (protection_domain.not_null()) {
++        java_lang_Class_set_protection_domain(mirror(), protection_domain());
++      }
++    }
++
++    assert(is_instance_klass(), "must be to do the next line's assert");
++    assert(((InstanceKlass*)this)->is_shared_boot_class(), "limited support for now");
++
++    /* not needed as the class_loader() for boot classes is NULL
++
++    assert(class_loader() == k->class_loader(), "should be same");
++    if (class_loader.not_null()) {
++      set_class_loader(mirror(), class_loader());
++    }
++    */
++
++    set_java_mirror(mirror);
++    clear_has_raw_archived_mirror();
++    java_lang_Class_set_mirror_module_field(this, mirror, module_handle, THREAD);
++  } else if (this->has_raw_archived_mirror()) {
+     ResourceMark rm(THREAD);
+     log_debug(cds, mirror)("%s has raw archived mirror", external_name());
+     if (HeapShared::open_archive_heap_region_mapped()) {
+diff -r 0905868db490 src/hotspot/share/oops/klass.hpp
+--- a/src/hotspot/share/oops/klass.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/oops/klass.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -78,6 +78,7 @@
+ class Klass : public Metadata {
+   friend class VMStructs;
+   friend class JVMCIVMStructs;
++  friend class Threads;
+  protected:
+   // If you add a new field that points to any metaspace object, you
+   // must add this field to Klass::metaspace_pointers_do().
+diff -r 0905868db490 src/hotspot/share/oops/oop.hpp
+--- a/src/hotspot/share/oops/oop.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/oops/oop.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -58,6 +58,8 @@
+     Klass*      _klass;
+     narrowKlass _compressed_klass;
+   } _metadata;
++  // Idea: to track if these things are even on the heap or what
++  //volatile uint janiuk = 0x70f2bb35;
+ 
+  public:
+   inline markWord  mark()          const;
+diff -r 0905868db490 src/hotspot/share/runtime/janiuk.hpp
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/src/hotspot/share/runtime/janiuk.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -0,0 +1,28 @@
++//
++// Created by janiuk on 2020-03-20.
++//
++
++#ifndef JDK_JANIUK_H
++#define JDK_JANIUK_H
++
++// Janiuk
++
++#include <cstdlib>
++#include "../oops/instanceKlass.hpp"
++#include "../oops/oop.hpp"
++#include "globals_shared.hpp"
++
++extern bool is_restoring_heap_archive;
++extern size_t current_table_entry;
++const size_t n_slots = 500;
++extern struct JaniukTable {
++  InstanceKlass* k; // It's kind of weird to be saving instanceklass pointers, those are not persistent. or?
++
++  // Right now this is all needed, since we're just correcting a potential offset
++  // Will be used in conjunction with JaniukDumpData::dump_time_heap_start;
++  oop mirror;
++  u1 _init_state;
++} table[n_slots];
++extern size_t next_slot;
++
++#endif //JDK_JANIUK_H
+diff -r 0905868db490 src/hotspot/share/runtime/thread.cpp
+--- a/src/hotspot/share/runtime/thread.cpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/runtime/thread.cpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -136,6 +136,16 @@
+ #include "jfr/jfr.hpp"
+ #endif
+ 
++//JANIUK
++#include <iostream>
++#include <fstream>
++#include <string>
++#include <sys/mman.h>
++#include <classfile/symbolTable.hpp>
++#include "classfile/classLoaderDataGraph.hpp"
++#include "gc/epsilon/epsilonHeap.hpp"
++#include "janiuk.hpp"
++
+ // Initialization after module runtime initialization
+ void universe_post_module_init();  // must happen after call_initPhase2
+ 
+@@ -1083,18 +1093,19 @@
+   InstanceKlass* ik = SystemDictionary::Thread_klass();
+   assert(ik->is_initialized(), "must be");
+   instanceHandle thread_oop = ik->allocate_instance_handle(CHECK_NULL);
++  // So right now this handle is empty, right?
+ 
+   // Cannot use JavaCalls::construct_new_instance because the java.lang.Thread
+   // constructor calls Thread.current(), which must be set here for the
+   // initial thread.
+-  java_lang_Thread::set_thread(thread_oop(), thread);
+-  java_lang_Thread::set_priority(thread_oop(), NormPriority);
+-  thread->set_threadObj(thread_oop());
++  java_lang_Thread::set_thread(thread_oop(), thread); // STALE assinment to heap
++  java_lang_Thread::set_priority(thread_oop(), NormPriority); // assignment to heap, but should be snapshottable
++  thread->set_threadObj(thread_oop()); // STALE Assingment to metadata, needs to be remade too
+ 
+   Handle string = java_lang_String::create_from_str("main", CHECK_NULL);
+ 
+   JavaValue result(T_VOID);
+-  JavaCalls::call_special(&result, thread_oop,
++  JavaCalls::call_special(&result, thread_oop, // Create on heap, uh, hopefully should be snapshottable?
+                           ik,
+                           vmSymbols::object_initializer_name(),
+                           vmSymbols::threadgroup_string_void_signature(),
+@@ -3683,6 +3694,432 @@
+                                          vmSymbols::void_method_signature(), CHECK);
+ }
+ 
++
++struct JaniukDumpData {
++    char* dump_time_heap_start;
++    unsigned int length_in_bytes;
++    oop system_thread_group;
++    oop main_thread_group;
++    oop thread_object;
++} dump_data;
++
++// initializations for janiuk.hpp
++bool is_restoring_heap_archive = false;
++size_t current_table_entry = 0;
++size_t next_slot = 0;
++JaniukTable table[n_slots];
++
++class JaniukKlassClosure : public KlassClosure {
++    void do_klass(Klass* k) {
++        // QUESTION: They are not all shared, and not all Instance. Is this bad?
++        // assert(k->is_shared(), "only support shared classes for now");
++        if(!k->is_instance_klass()) {
++            tty->print_cr("Skipping class");
++            return;
++        }
++        InstanceKlass* ik = reinterpret_cast<InstanceKlass*>(k);
++
++        JaniukTable& next_entry = table[next_slot];
++        next_entry.k = ik;
++        next_entry.mirror = ik->java_mirror();
++        next_entry._init_state = ik->_init_state;
++        ++next_slot;
++        assert(next_slot < n_slots, "Don't want to go out of bounds!");
++
++        // Set a sentinel
++        table[next_slot].k = 0;
++        table[next_slot].mirror = 0;
++    }
++};
++
++class JaniukInstanceKlassClosure {
++public:
++    virtual void do_iklass(InstanceKlass* k, TRAPS) const {}
++};
++
++class SetLockClosure : public JaniukInstanceKlassClosure {
++    virtual void do_iklass(InstanceKlass* k, TRAPS) const {
++        assert(k->java_mirror() != NULL, "We're gonna set something on it so...");
++        typeArrayOop r = oopFactory::new_typeArray(T_INT, 0, CHECK);
++        java_lang_Class::set_init_lock(k->java_mirror(), r);
++    }
++};
++
++class NullifyLockClosure : public JaniukInstanceKlassClosure {
++    virtual void do_iklass(InstanceKlass* k, TRAPS) const {
++        assert(k->java_mirror() != NULL, "We're gonna set something on it so...");
++        // Let's do the lock stuff, is this enough?
++        java_lang_Class::set_init_lock(k->java_mirror(), NULL);
++    }
++};
++
++class LinkClosure : public JaniukInstanceKlassClosure {
++    virtual void do_iklass(InstanceKlass* k, TRAPS) const {
++        // Let's do the lock stuff, is this enough?
++        k->link_class(CHECK);
++    }
++};
++
++class SetInitializedStateClosure : public JaniukInstanceKlassClosure {
++    virtual void do_iklass(InstanceKlass* k, TRAPS) const {
++        // Let's do the lock stuff, is this enough?
++        k->set_init_state(InstanceKlass::fully_initialized);
++    }
++};
++
++
++void dependent_klasses_do(InstanceKlass* k, const JaniukInstanceKlassClosure& closure, TRAPS) {
++    // Might implement postorder/inorder if I need
++    closure.do_iklass(k, CHECK);
++
++    //(4) init superklass
++    Klass* super_klass = k->super();
++    if (super_klass != NULL) {
++        InstanceKlass* ik_super = InstanceKlass::cast(super_klass);
++        dependent_klasses_do(ik_super, closure, CHECK);
++    }
++
++    //(5) init superinterfaces
++    Array<InstanceKlass*>* interfaces = k->local_interfaces();
++    int num_interfaces = interfaces->length();
++    for (int index = 0; index < num_interfaces; index++) {
++        InstanceKlass* interk = interfaces->at(index);
++        dependent_klasses_do(interk, closure, CHECK);
++    }
++
++    // And here we kinda isolate the question: Are there other places we need to visit?
++}
++
++// Janiuk
++void quick_init(InstanceKlass* k, TRAPS) {
++
++    // Numbering system arbitrary, my own.
++    // InstanceKlass::Initialize has lots of references to "the JVM book", I asked around but was not able to get a
++    // copy.
++
++    // Here, maybe I should check if its already initialized first?
++    if(!k->should_be_initialized()) return;
++
++    //(1) lock (?)
++    // Do I need this? Guessing no rn
++    // Ioi: cant hurt
++    HandleMark hm(THREAD);
++
++
++    // So lets try lock all, init all, unlock all, and then set initialized-- on all
++    dependent_klasses_do(k, SetLockClosure(), CHECK);
++    dependent_klasses_do(k, LinkClosure(), CHECK);
++    dependent_klasses_do(k, NullifyLockClosure(), CHECK);
++    dependent_klasses_do(k, SetInitializedStateClosure(), CHECK);
++
++    // Janiuk: Let's set those lock objects actually!
++    // Stolen from java_lang_Class::initialize_mirror_fields
++
++    // Allocate a simple java object for a lock.
++    // This needs to be a java object because during class initialization
++    // it can be held across a java call.
++    //typeArrayOop r = oopFactory::new_typeArray(T_INT, 0, CHECK);
++    //java_lang_Class::set_init_lock(k->java_mirror(), r);
++    // And we need to clear them later...
++
++    //(5.1) link
++    // Put at beginning
++    //k->link_class(CHECK);
++
++    //Handle mirror(THREAD, k->java_mirror());
++    // can't call this, this will initialize_static_fields wich will set them to default values
++    // java_lang_Class::initialize_mirror_fields(k, mirror, Handle(), THREAD);
++    // Need to set the lock wihtout doing it
++
++    //TODO Maybe this will work?
++    //typeArrayOop r = oopFactory::new_typeArray(T_INT, 0, CHECK);
++    //java_lang_Class::set_init_lock(k->java_mirror(), r);
++
++
++    // InstanceKlass::initialize does linking here, I'l do it later, guess it doesnt matter
++
++    // and it does some long locking steps, starting with
++    //Handle h_init_lock(THREAD, init_lock());
++    //ObjectLocker ol(h_init_lock, THREAD, h_init_lock() != NULL);
++    // But I think we can do without locking too, right?
++
++
++    //(2) set init state (?)
++    // Lotsa this stuff is private; I could put it there, or I could just use friends
++    // I'll use friends
++    // also, Actually, I'm skipping this because it's a backwards step for the interfaces we recursively initialize.
++    //k->set_init_state(InstanceKlass::being_initialized);
++
++
++    //(3) set init thread (also not sure if necessary but ok)
++    // NO NEED, just static initializer
++    //assert(THREAD->is_Java_thread(), "non-JavaThread in initialize_impl");
++    //JavaThread* jt = (JavaThread*)THREAD;
++    //k->set_init_thread(jt);
++
++
++    /*
++    //(4) init superklass
++    Klass* super_klass = k->super();
++    if (super_klass != NULL) {
++        InstanceKlass* ik_super = InstanceKlass::cast(super_klass);
++        quick_init(ik_super, CHECK);
++    }
++
++    //(5) init superinterfaces
++    Array<InstanceKlass*>* interfaces = k->local_interfaces();
++    int num_interfaces = interfaces->length();
++    for (int index = 0; index < num_interfaces; index++) {
++        InstanceKlass* interk = interfaces->at(index);
++        quick_init(interk, CHECK);
++    }
++    */
++
++
++
++    //(5.2) other fields
++    // also update other fields ... see InstanceKlass::initialize()
++    // What other things would be necessary?
++    //
++    // Janiuk: Can't find other fields to init honestly, at this position. Perhaps the init thread above counts.
++    // Also there's the "retrieve AOT code" stuff, but I think that can be skipped?
++    // NOT DOING right now: AOT
++
++
++    //(6) set init state
++    //k->set_init_thread(NULL); // reset _init_thread before changing _init_state
++    //k->set_init_state(InstanceKlass::fully_initialized);
++
++
++    //(6.1) set java mirror
++    // TODO: blocked by not having written out the table with mirror adresses yet
++    //k->set_java_mirror(.....); << see notes below:
++    //could be a tthe start
++
++
++
++    //(7) "notify"; unlock
++    // Earlier thought init thread should be here, but actually on 6 IM HERE
++
++    // Some lock stuff here too that I'm skipping for now
++
++    // Let's do the lock stuff, is this enough?
++    //java_lang_Class::set_init_lock(k->java_mirror(), NULL);
++}
++
++void run_registerNatives(InstanceKlass* k, TRAPS) {
++    const char* name = "registerNatives";
++    TempNewSymbol regNatives = SymbolTable::new_symbol(name);
++    Method* the_method = k->find_method(regNatives, vmSymbols::void_method_signature());
++    assert(the_method != NULL, "We need to find this method");
++    methodHandle h_method(THREAD, the_method);
++
++    LogTarget(Info, class, init) lt;
++    if (lt.is_enabled()) {
++        ResourceMark rm(THREAD);
++        LogStream ls(lt);
++        regNatives->print_value_on(&ls);
++        ls.print_cr("%s (" INTPTR_FORMAT ")", h_method() == NULL ? "(no method)" : "", p2i(k));
++    }
++    if (h_method() != NULL) {
++        JavaCallArguments args; // No arguments
++        JavaValue result(T_VOID);
++        JavaCalls::call(&result, h_method, &args, CHECK); // Static call (no args)
++    }
++}
++
++class JaniukReportClosure : public KlassClosure {
++public:
++  static const char* time_step;
++  void do_klass(Klass* k) {
++    k->name()->print_on(tty); tty->print(", ");
++    tty->print(k->is_instance_klass() ? "1" : "0"); tty->print(", ");
++    tty->print(k->is_shared() ? "1" : "0"); tty->print(", ");
++    tty->print("%s", time_step); tty->print(", ");
++    tty->print("%i", k->is_instance_klass() ? reinterpret_cast<InstanceKlass*>(k)->init_state() : -1); tty->print(", ");
++    tty->print("%p", k->java_mirror()); tty->print(", ");
++    tty->print("%p", k->class_loader_data()); tty->print(", ");
++    tty->print_cr("");
++  }
++};
++const char* JaniukReportClosure::time_step = "init";
++
++bool jprintreps = true;
++bool jsetmirrors = false;
++
++const char* heap_dump_path = "/mnt/sams-ssd/Code-ssd/java/wd/janiuk-heap-dump.bin";
++const char* table_path = "/mnt/sams-ssd/Code-ssd/java/wd/janiuk-mirror-table.bin";
++const char* dump_data_path = "/mnt/sams-ssd/Code-ssd/java/wd/janiuk-snapshot-data.bin";
++
++void print_state_report(const char* time_step, TRAPS) {
++    if(!jprintreps) return;
++    tty->print_cr("#name, is_instance, is_shared, time_step, init_state, java_mirror, class_loader_data");
++    JaniukReportClosure::time_step = time_step;
++
++    ClassLoaderDataGraph_lock->lock();
++    JaniukReportClosure report_classes;
++    ClassLoaderDataGraph::classes_do(&report_classes);
++    ClassLoaderDataGraph_lock->unlock();
++}
++
++char* Threads::heap_start_location() {
++  if(UseCompressedOops) {
++    if(!UseCompressedClassPointers) warning("Shouldn't you also put UseCompressedClassPointers?");
++    return (char*)CompressedOops::_heap_address_range.start();
++    //heap_length = CompressedOops::_heap_address_range.byte_size();
++  }else{
++    assert(false, "havent implemented top support here yet");
++    if(UseCompressedClassPointers) warning("Shouldn't you also put -UseCompressedClassPointers?");
++    return EpsilonHeap::heap()->_virtual_space.low();
++    //heap_length = EpsilonHeap::heap()->_virtual_space.high() - heap_start;
++    // Maybe should use jsut _space instead
++  }
++}
++
++unsigned int Threads::heap_length(TRAPS) {
++  return (char*)__the_thread__->tlab().top()-heap_start_location();
++}
++
++void Threads::read_saved_data(TRAPS) {
++  // use snapshot without running the <clinit> of the 5 classes
++  // Load heap snapshot, and initialize java_lang_String to use this snapshot
++
++  // Q: I want to make this a read-only file, since I want to map it with copy-on-write
++  // However, seems like even with a copy-on-write mapping, you need to the file to be writable
++  // at least the way I read the docs.
++  int oflag = O_RDWR;
++  int mode = 0666 /*No idea what this is */;
++  int map_prot = PROT_READ | PROT_WRITE;
++  int map_flags = MAP_PRIVATE | MAP_FIXED;
++
++  int dump_data_fd = os::open(dump_data_path, oflag, mode);
++  size_t dump_data_result = os::read(dump_data_fd, &dump_data, sizeof(dump_data));
++  assert(dump_data_result == sizeof(dump_data), "should have read this many bytes");
++
++  char* heap_start = heap_start_location();
++
++  //Now that we have read the data about the dump, we how how big it is and where we will set the top
++  unsigned int heap_length = dump_data.length_in_bytes;
++  char* new_top_char = heap_start + heap_length;
++  HeapWord* new_top = reinterpret_cast<HeapWord *>(new_top_char);
++  ThreadLocalAllocBuffer* tlab = &__the_thread__->tlab();
++  assert(new_top > tlab->start(), "New top needs to be after start! You can increase TLAB size to resolve this: -Xmx64M -XX:EpsilonMaxTLABSize=8M -XX:MinTLABSize=8M");
++  assert(new_top < tlab->end(), "We havent run out of the tlab have we?");
++  tlab->set_end(new_top);
++
++  // And then we would in principle do offsetting but rn we assume it starts alwaqys the same
++  tty->print_cr("Old heap start: %p", dump_data.dump_time_heap_start);
++  tty->print_cr("Current heap start: %p", heap_start);
++  assert(dump_data.dump_time_heap_start == heap_start, "Nothing will work if the heap isnt same right now");
++
++  int dump_fd = os::open(heap_dump_path, oflag, mode);
++  void* dump_mm_result = mmap(heap_start, heap_length, map_prot, map_flags, dump_fd, 0);
++  assert(dump_mm_result == heap_start, "mapping must happen exactly to the heap");
++
++  assert(tlab == &__the_thread__->tlab(), "Still same tlab, right?");
++  __the_thread__->tlab()._top = new_top;
++
++  int table_fd = os::open(table_path, oflag, mode);
++  size_t read_bytes = os::read(table_fd, table, sizeof(table));
++  assert(read_bytes > 0, "Must have read something!");
++  assert(read_bytes == sizeof(table), "Should have read the whold table actually");
++}
++
++// write snapshot and exit
++void Threads::save_heap_dump(TRAPS) {
++
++  int oflag = O_WRONLY | O_CREAT | O_TRUNC;
++  int mode = 0666;
++
++  //Iterate classes save java mirorrs
++  // Even tho we don't use this info in mapping up later just yet
++  ClassLoaderDataGraph_lock->lock();
++  JaniukKlassClosure collect_classes;
++  ClassLoaderDataGraph::loaded_classes_do(&collect_classes);
++  tty->print("traversed %lu classes", next_slot);
++  int table_fd = os::open(table_path, oflag, mode);
++  os::write(table_fd, table, sizeof(table));
++  os::close(table_fd);
++  ClassLoaderDataGraph_lock->unlock();
++
++  // Dump the heap
++  char* heap_start = heap_start_location();
++  unsigned int heap_len = heap_length(CHECK);
++  int fd = os::open(heap_dump_path, oflag, mode);
++  os::write(fd, heap_start, heap_len);
++  os::close(fd);
++
++  // Write data about the heap dump
++  dump_data.dump_time_heap_start = heap_start;
++  dump_data.length_in_bytes = heap_len;
++  dump_data.system_thread_group = Universe::system_thread_group();
++  dump_data.main_thread_group = Universe::main_thread_group();
++  // dump_data.thread_object assigned outside
++
++  int dump_data_fd = os::open(dump_data_path, oflag, mode);
++  os::write(dump_data_fd, &dump_data, sizeof(dump_data));
++  os::close(dump_data_fd);
++
++  exit(0);
++}
++
++
++void Threads::restore_heap_dump(JavaThread* main_thread, TRAPS) {
++  read_saved_data(CHECK);
++
++  is_restoring_heap_archive = true;
++  int quickinit_count = 0;
++  int loads_count = 0;
++  tty->print_cr("Loading following shared classes:");
++  u1 min_required_state = InstanceKlass::fully_initialized;
++  for(size_t i = 0; i < n_slots; ++i) {
++    JaniukTable &entry = table[i];
++    if (entry.k == NULL) { //Break on the sentinel
++      assert(i != 0, "We must have done some work!");
++      tty->print_cr("traversed %lu classes", i);
++      break;
++    }
++    // Only care about those who were fully initialized
++    if(entry._init_state < min_required_state) continue;
++
++    current_table_entry = i;
++
++    // not yet loaded
++    if(entry.k->class_loader_data() == NULL) {
++      assert(entry.k->is_shared_boot_class(), "must be");
++      // This sets the mirror from the table
++      SystemDictionary::load_shared_boot_class(entry.k->name(), CHECK);
++      // Adding this too in order to call add_to_hierarchy
++      SystemDictionary::define_instance_class(entry.k, THREAD);
++      loads_count++;
++    }
++    assert(entry.k->java_mirror() != NULL, "Shouldn't be anymore");
++    assert(entry.k->class_loader_data() != NULL, "Shouldn't be anymore");
++    assert(entry.k->is_loaded(), "Shouldn't be anymore");
++    quick_init(entry.k, CHECK);
++    quickinit_count++;
++  }
++  is_restoring_heap_archive = false;
++
++  run_registerNatives(SystemDictionary::System_klass(), CHECK);
++  run_registerNatives(SystemDictionary::Class_klass(), CHECK);
++  run_registerNatives(SystemDictionary::Thread_klass(), CHECK);
++
++  // TODO and maybe we'll put tis at the beginning
++  // Side effects of:
++  //  Handle thread_group_ = create_initial_thread_group(CHECK);
++  //  Universe::set_main_thread_group(thread_group_());
++  Universe::set_system_thread_group(dump_data.system_thread_group);
++  Universe::set_main_thread_group(dump_data.main_thread_group);
++
++  // TODO and maybe we'll put tis at the beginning
++  // Side effects of dump_data.thread_object = create_initial_thread(thread_group, main_thread, CHECK);
++  java_lang_Thread::set_thread(dump_data.thread_object, main_thread);
++  main_thread->set_threadObj(dump_data.thread_object);
++
++  tty->print_cr("Heap mapped up, %i quickinits, %i loads //janiuk", quickinit_count, loads_count);
++}
++
+ void Threads::initialize_java_lang_classes(JavaThread* main_thread, TRAPS) {
+   TraceTime timer("Initialize java.lang classes", TRACETIME_LOG(Info, startuptime));
+ 
+@@ -3690,45 +4127,88 @@
+     create_vm_init_libraries();
+   }
+ 
+-  initialize_class(vmSymbols::java_lang_String(), CHECK);
+-
+-  // Inject CompactStrings value after the static initializers for String ran.
+-  java_lang_String::set_compact_strings(CompactStrings);
+-
+-  // Initialize java_lang.System (needed before creating the thread)
+-  initialize_class(vmSymbols::java_lang_System(), CHECK);
+-  // The VM creates & returns objects of this class. Make sure it's initialized.
+-  initialize_class(vmSymbols::java_lang_Class(), CHECK);
+-  initialize_class(vmSymbols::java_lang_ThreadGroup(), CHECK);
+-  Handle thread_group = create_initial_thread_group(CHECK);
+-  Universe::set_main_thread_group(thread_group());
+-  initialize_class(vmSymbols::java_lang_Thread(), CHECK);
+-  oop thread_object = create_initial_thread(thread_group, main_thread, CHECK);
+-  main_thread->set_threadObj(thread_object);
+-
+-  // Set thread status to running since main thread has
+-  // been started and running.
+-  java_lang_Thread::set_thread_status(thread_object,
+-                                      java_lang_Thread::RUNNABLE);
+-
+-  // The VM creates objects of this class.
+-  initialize_class(vmSymbols::java_lang_Module(), CHECK);
++  if (NewCodeParameter != 0) {
++    tty->print_cr("STATE REPORT BEFORE INIT SEQUENCE");
++    print_state_report("init", CHECK);
++  }
++
++  if(NewCodeParameter == 1) {
++    // This will load dump_data
++    restore_heap_dump(main_thread, CHECK);
++    print_state_report("synth", CHECK);
++  }else{
++
++    initialize_class(vmSymbols::java_lang_String(), CHECK); // 14 bytecodes
++
++    // Inject CompactStrings value after the static initializers for String ran.
++    java_lang_String::set_compact_strings(CompactStrings);
++    // Initialize java_lang.System (needed before creating the thread)
++    initialize_class(vmSymbols::java_lang_System(), CHECK); // 8 bytecodes
++
++    // The VM creates & returns objects of this class. Make sure it's initialized.
++    initialize_class(vmSymbols::java_lang_Class(), CHECK); // 16 bytecodes
++    initialize_class(vmSymbols::java_lang_ThreadGroup(), CHECK); // 0 bytecodes
++
++    // its' the main thread group
++    Handle thread_group;
++    thread_group = create_initial_thread_group(CHECK); // 97 bytecodes
++    Universe::set_main_thread_group(thread_group());
++
++    // Out of order actually ish but it should be fine... with creating the thread grou handle
++    initialize_class(vmSymbols::java_lang_Thread(), CHECK); // 5 bytecodes
++
++    // It's interesting that this created a raw oop but ok
++    // This call has the following side effects:
++    // *HEAP: set NONSTATIC "thread", poitns to META, needs to reset
++    //  HEAP: set nonstatic priority, should be snapshottable
++    // *META: set at least one reference into heap, need to keep and set
++    // *HEAP: create an object (it is what it returns)
++    oop thread_object = create_initial_thread(thread_group, main_thread, CHECK); // And the thread in heap has a pointer to the thread in native
++    // ANd vice versa
++    // 320 bytecodes
++
++    // META assignment -- need to reset
++    // Repeated in restore_heap_dump
++    main_thread->set_threadObj(thread_object);
++
++    assert(SystemDictionary::Thread_klass()->is_initialized(), "must be");
++    // HEAP assignment - should be snapshottable!
++    // Set thread status to running since main thread has been started and running.
++    java_lang_Thread::set_thread_status(thread_object, java_lang_Thread::RUNNABLE);
++    // So, should not have to do anything in restore_heap_dump.
++
++    // The VM creates objects of this class.
++    initialize_class(vmSymbols::java_lang_Module(), CHECK); // 301 bytecodes
+ 
+ #ifdef ASSERT
+-  InstanceKlass *k = SystemDictionary::UnsafeConstants_klass();
+-  assert(k->is_not_initialized(), "UnsafeConstants should not already be initialized");
++    InstanceKlass *k = SystemDictionary::UnsafeConstants_klass();
++    assert(k->is_not_initialized(), "UnsafeConstants should not already be initialized");
+ #endif
+ 
+-  // initialize the hardware-specific constants needed by Unsafe
+-  initialize_class(vmSymbols::jdk_internal_misc_UnsafeConstants(), CHECK);
+-  jdk_internal_misc_UnsafeConstants::set_unsafe_constants();
+-
+-  // The VM preresolves methods to these classes. Make sure that they get initialized
+-  initialize_class(vmSymbols::java_lang_reflect_Method(), CHECK);
+-  initialize_class(vmSymbols::java_lang_ref_Finalizer(), CHECK);
++    // initialize the hardware-specific constants needed by Unsafe
++    // Regular initialization hopeuflly
++    initialize_class(vmSymbols::jdk_internal_misc_UnsafeConstants(), CHECK); // 11 bytecodes
++    // But what does this do?
++    // Oh, this sets some very system-specific fields on the unsfaeonstnaces mirror.
++    // ENdianness, page size...
++    // So it should be saved by the snapshot and should not need repeating
++    jdk_internal_misc_UnsafeConstants::set_unsafe_constants();
++
++    // The VM preresolves methods to these classes. Make sure that they get initialized
++    // Oh this will be interesting...
++    initialize_class(vmSymbols::java_lang_reflect_Method(), CHECK); // over 2000 bytecodes
++
++    dump_data.thread_object = thread_object; // Used by save_heap_dump when mapping down, and also later here
++    if(NewCodeParameter == 2) {
++      print_state_report("normal", CHECK);
++      save_heap_dump(CHECK);
++    }
++  }
++
++  initialize_class(vmSymbols::java_lang_ref_Finalizer(), CHECK); // about 600 bytecodes
+ 
+   // Phase 1 of the system initialization in the library, java.lang.System class initialization
+-  call_initPhase1(CHECK);
++  call_initPhase1(CHECK); // like 55000 bytecodes
+ 
+   // get the Java runtime name, version, and vendor info after java.lang.System is initialized
+   JDK_Version::set_runtime_name(get_java_runtime_name(THREAD));
+@@ -3737,8 +4217,8 @@
+   JDK_Version::set_runtime_vendor_vm_bug_url(get_java_runtime_vendor_vm_bug_url(THREAD));
+ 
+   // an instance of OutOfMemory exception has been allocated earlier
+-  initialize_class(vmSymbols::java_lang_OutOfMemoryError(), CHECK);
+-  initialize_class(vmSymbols::java_lang_NullPointerException(), CHECK);
++  initialize_class(vmSymbols::java_lang_OutOfMemoryError(), CHECK); // about 80 bytecodes
++  initialize_class(vmSymbols::java_lang_NullPointerException(), CHECK); // zero for the rest
+   initialize_class(vmSymbols::java_lang_ClassCastException(), CHECK);
+   initialize_class(vmSymbols::java_lang_ArrayStoreException(), CHECK);
+   initialize_class(vmSymbols::java_lang_ArithmeticException(), CHECK);
+diff -r 0905868db490 src/hotspot/share/runtime/thread.hpp
+--- a/src/hotspot/share/runtime/thread.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/runtime/thread.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -2289,6 +2289,13 @@
+   static void deoptimized_wrt_marked_nmethods();
+ 
+   struct Test;                  // For private gtest access.
++
++  // Janiuk
++  static char *heap_start_location();
++  static void restore_heap_dump(JavaThread* main_thread, TRAPS);
++  static void read_saved_data(TRAPS);
++  static void save_heap_dump(TRAPS);
++  static unsigned int heap_length(TRAPS);
+ };
+ 
+ class SignalHandlerMark: public StackObj {
+diff -r 0905868db490 src/hotspot/share/utilities/macros.hpp
+--- a/src/hotspot/share/utilities/macros.hpp	Fri Jan 31 09:32:00 2020 +0100
++++ b/src/hotspot/share/utilities/macros.hpp	Mon Mar 23 14:28:12 2020 +0100
+@@ -610,7 +610,7 @@
+ #define COMPILER_HEADER(basename)        XSTR(COMPILER_HEADER_STEM(basename).hpp)
+ #define COMPILER_HEADER_INLINE(basename) XSTR(COMPILER_HEADER_STEM(basename).inline.hpp)
+ 
+-#if INCLUDE_CDS && INCLUDE_G1GC && defined(_LP64) && !defined(_WINDOWS)
++#if INCLUDE_CDS && INCLUDE_G1GC && defined(_LP64) && !defined(_WINDOWS) /* Janiuk: just not including java heap didnt work */ && false
+ #define INCLUDE_CDS_JAVA_HEAP 1
+ #define CDS_JAVA_HEAP_ONLY(x) x
+ #define NOT_CDS_JAVA_HEAP(x)
