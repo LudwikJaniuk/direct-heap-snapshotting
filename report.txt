@@ -4,6 +4,8 @@ before that, both were run once; those results discarded
 this was on commit 5ff83983b13ab5645d1a991e1351c05a9ad86d41
 
 
+
+inst-0, inst-3, time-elapsed-0, time-elapsed-3
 81938940,83629263,26.388,27.475,
 81933653,83624632,26.910,27.892,
 81936692,83634446,27.282,28.197,
